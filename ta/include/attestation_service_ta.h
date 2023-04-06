@@ -27,7 +27,6 @@
 #ifndef TA_ATTESTATION_SERVICE_H
 #define TA_ATTESTATION_SERVICE_H
 
-
 /*
  * This UUID is generated with uuidgen
  * the ITU-T UUID generator at http://www.itu.int/ITU-T/asn1/uuid.html
