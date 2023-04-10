@@ -81,7 +81,7 @@ int main(void)
 	 * TA_HELLO_WORLD_CMD_INC_VALUE is the actual function in the TA to be
 	 * called.
 	 */
-	res = TEEC_InvokeCommand(&sess, TA_DEVICE_CHECK_VALUE, &op,
+	res = TEEC_InvokeCommand(&sess, TA_DEVICE_TEST_TLS, &op,
 				 &err_origin);
 	if (res != TEEC_SUCCESS)
 		errx(1, "TEEC_InvokeCommand failed with code 0x%x origin 0x%x",

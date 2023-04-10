@@ -37,5 +37,6 @@
 
 /* The function IDs implemented in this TA */
 #define TA_DEVICE_CHECK_VALUE		0
+#define TA_DEVICE_TEST_TLS			1
 
 #endif /*TA_ATTESTATION_SERVICE_H*/
