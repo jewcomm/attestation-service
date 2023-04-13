@@ -30,6 +30,9 @@
 
 #include <pta_attestation.h>
 
+#include <tee_isocket.h>
+#include <tee_tcpsocket.h>
+
 #include <attestation_service_ta.h>
 
 #include <string.h> // need for memcpy()
@@ -39,20 +42,67 @@
 
 TEE_UUID pta_attestation_uuid = PTA_ATTESTATION_UUID;
 
-void error_to_IMSG(TEE_Result error){
+typedef struct{
+	uint32_t measId;
+	uint8_t measResult[32];
+} measurment;
+
+
+typedef struct{
+	char IMEI[16];
+	size_t measLen;
+	measurment meas[];
+} packet;
+
+
+void error_to_DMSG(TEE_Result error, uint32_t extError){
 	switch (error)
 	{
 	case TEE_ERROR_BAD_PARAMETERS:
-		IMSG("TEE_ERROR_BAD_PARAMETERS");
-		return ;
-
+		DMSG("TEE_ERROR_BAD_PARAMETERS");
+		break; 
 	case TEE_ERROR_SHORT_BUFFER:
-		IMSG("TEE_ERROR_SHORT_BUFFER");
-		return ;
-
+		DMSG("TEE_ERROR_SHORT_BUFFER");
+		break ;
+	case TEE_ERROR_COMMUNICATION:
+		DMSG("TEE_ERROR_COMMUNICATION");
+		break;
+	case TEE_ISOCKET_ERROR_TIMEOUT:
+		DMSG("TEE_ISOCKET_ERROR_TIMEOUT");
+		break;
 	default:
-		IMSG("UNDEFINED ERROR");
-		return ;
+		DMSG("Another return: %i", error);
+		break;
+	}
+
+	switch (error)
+	{
+	case 0:
+		return;
+	case TEE_ISOCKET_ERROR_PROTOCOL:
+		DMSG("TEE_ISOCKET_ERROR_PROTOCOL");
+		return;
+	case TEE_ISOCKET_ERROR_REMOTE_CLOSED:
+		DMSG("TEE_ISOCKET_ERROR_REMOTE_CLOSED");
+		return;
+	case TEE_ISOCKET_ERROR_TIMEOUT:
+		DMSG("TEE_ISOCKET_ERROR_TIMEOUT");
+		return;
+	case TEE_ISOCKET_ERROR_OUT_OF_RESOURCES:
+		DMSG("TEE_ISOCKET_ERROR_OUT_OF_RESOURCES");
+		return;		
+	case TEE_ISOCKET_ERROR_LARGE_BUFFER:
+		DMSG("TEE_ISOCKET_ERROR_LARGE_BUFFER");
+		return;	
+	case TEE_ISOCKET_WARNING_PROTOCOL:
+		DMSG("TEE_ISOCKET_WARNING_PROTOCOL");
+		return;
+	case TEE_ISOCKET_ERROR_HOSTNAME:
+		DMSG("TEE_ISOCKET_ERROR_HOSTNAME");
+		return;
+	default:
+		DMSG("Another return: %i", error);
+		return;
 	}
 }
 
@@ -106,7 +156,7 @@ TEE_Result attestation_tee_ta(uint8_t * hash_tee, size_t hash_tee_size,
 	if(res != TEE_SUCCESS){
 		IMSG("Cannot open session for check tee");
 		IMSG("ERROR:");
-		error_to_IMSG(res);
+		error_to_DMSG(res, 0);
 		return res;
 	}
 
@@ -117,7 +167,7 @@ TEE_Result attestation_tee_ta(uint8_t * hash_tee, size_t hash_tee_size,
 	if(res != TEE_SUCCESS){
 		IMSG("Cannot get tee attestation value");
 		IMSG("ERROR:");
-		error_to_IMSG(res);
+		error_to_DMSG(res, 0);
 		return res;
 	}
 
@@ -130,7 +180,7 @@ TEE_Result attestation_tee_ta(uint8_t * hash_tee, size_t hash_tee_size,
 	if(res != TEE_SUCCESS){
 		IMSG("Cannot get ta attestation value");
 		IMSG("ERROR:");
-		error_to_IMSG(res);
+		error_to_DMSG(res, 0);
 		return res;
 	}
 
@@ -139,6 +189,58 @@ TEE_Result attestation_tee_ta(uint8_t * hash_tee, size_t hash_tee_size,
 	TEE_CloseTASession(pta_attestation_tee_session);
 
 	return res;
+}
+
+TEE_Result attestation_send_recv(){
+	DMSG("Called send_recv func");
+
+	TEE_Result res = TEE_ERROR_GENERIC;
+
+	TEE_iSocketHandle ctx;
+	TEE_tcpSocket_Setup setup;
+	
+	setup.ipVersion = TEE_IP_VERSION_4;
+	setup.server_port = 3000;
+	char * addr = "192.168.1.70";
+	setup.server_addr = addr;
+
+	uint32_t protocolError;
+
+	char msg[] = "Hello World!\0";
+	uint32_t sizeMsg = sizeof(msg);	
+	uint32_t rs = 32;
+	char receive[32];
+
+	res = TEE_tcpSocket->open(&ctx, &setup, &protocolError);
+	if(res != TEE_SUCCESS){
+		DMSG("Dont open tcp. Return:");
+		error_to_DMSG(res, protocolError);
+		return res;
+	}
+
+	res = TEE_tcpSocket->send(ctx, msg, &sizeMsg, 0);
+	if(res != TEE_SUCCESS){
+		DMSG("Dont send tcp. Return");
+		error_to_DMSG(res, 0);
+		return res;
+	}
+
+	res = TEE_tcpSocket->recv(ctx, receive, &rs, 100);
+	if(res != TEE_SUCCESS){
+		DMSG("Dont receiver tcp. Return");
+		error_to_DMSG(res, 0);
+		return res;
+	}
+
+	DMSG("Receive: :%s", receive);
+
+	res = TEE_tcpSocket->close(ctx);
+	if(res != TEE_SUCCESS){
+		DMSG("Dont close tcp. Return");
+		error_to_DMSG(res, 0);
+		return res;
+	}
+	return TEE_SUCCESS;
 }
 
 /*
@@ -238,6 +340,11 @@ static TEE_Result checker(void __maybe_unused *sess_ctx, uint32_t param_types,
 		return att_tee;
 	}
 
+	att_tee = attestation_send_recv();
+	if(att_tee != TEE_SUCCESS){
+		return att_tee;
+	}
+
 	return TEE_SUCCESS;
 }
 
@@ -255,6 +362,8 @@ TEE_Result TA_InvokeCommandEntryPoint(void __maybe_unused *sess_ctx,
 	switch (cmd_id) {
 	case TA_DEVICE_CHECK_VALUE:
 		return checker(sess_ctx, param_types, params);
+	case TA_DEVICE_SEND_VALUE:
+		return;
 	default:
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
