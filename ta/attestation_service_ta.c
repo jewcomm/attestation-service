@@ -40,6 +40,8 @@
 #define ATT_MAX_KEYSZ 4096
 #define TEE_SHA256_HASH_SIZE 32
 
+#define MAX_MEAS 6
+
 TEE_UUID pta_attestation_uuid = PTA_ATTESTATION_UUID;
 
 typedef struct{
@@ -51,7 +53,7 @@ typedef struct{
 typedef struct{
 	char IMEI[16];
 	size_t measLen;
-	measurment meas[];
+	measurment meas[MAX_MEAS];
 } packet;
 
 
@@ -191,7 +193,7 @@ TEE_Result attestation_tee_ta(uint8_t * hash_tee, size_t hash_tee_size,
 	return res;
 }
 
-TEE_Result attestation_send_recv(){
+TEE_Result attestation_send_recv(uint8_t * hash_tee, uint8_t * hash_ta){
 	DMSG("Called send_recv func");
 
 	TEE_Result res = TEE_ERROR_GENERIC;
@@ -206,8 +208,24 @@ TEE_Result attestation_send_recv(){
 
 	uint32_t protocolError;
 
-	char msg[] = "Hello World!\0";
-	uint32_t sizeMsg = sizeof(msg);	
+	measurment ta;
+	ta.measId = 1;
+	memcpy(ta.measResult, hash_ta, 32);
+
+	measurment tee;
+	tee.measId = 2;
+	memcpy(tee.measResult, hash_tee, 32);
+
+	packet msg;
+	char imei[16] = "1234567890123456";
+	memcpy(msg.IMEI, imei, 16);
+	msg.measLen = 2;
+	memcpy(&(msg.meas[0]), &ta, sizeof(ta));
+	memcpy(&(msg.meas[1]), &tee, sizeof(tee));
+	size_t sizeMsg = sizeof(msg);
+
+	// char msg[] = "Hello World!\0";
+	// uint32_t sizeMsg = sizeof(msg);	
 	uint32_t rs = 32;
 	char receive[32];
 
@@ -218,7 +236,7 @@ TEE_Result attestation_send_recv(){
 		return res;
 	}
 
-	res = TEE_tcpSocket->send(ctx, msg, &sizeMsg, 0);
+	res = TEE_tcpSocket->send(ctx, &msg, &sizeMsg, 0);
 	if(res != TEE_SUCCESS){
 		DMSG("Dont send tcp. Return");
 		error_to_DMSG(res, 0);
@@ -340,7 +358,7 @@ static TEE_Result checker(void __maybe_unused *sess_ctx, uint32_t param_types,
 		return att_tee;
 	}
 
-	att_tee = attestation_send_recv();
+	att_tee = attestation_send_recv(hash_tee, hash_ta);
 	if(att_tee != TEE_SUCCESS){
 		return att_tee;
 	}
@@ -362,8 +380,6 @@ TEE_Result TA_InvokeCommandEntryPoint(void __maybe_unused *sess_ctx,
 	switch (cmd_id) {
 	case TA_DEVICE_CHECK_VALUE:
 		return checker(sess_ctx, param_types, params);
-	case TA_DEVICE_SEND_VALUE:
-		return;
 	default:
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
