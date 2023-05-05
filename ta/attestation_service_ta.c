@@ -42,7 +42,16 @@
 
 #define MAX_MEAS 6
 
+#define PTA_SYS_CALL_GETTER 2
+
+#define PAGE_SIZE 4096
+
 TEE_UUID pta_attestation_uuid = PTA_ATTESTATION_UUID;
+
+#define MY_PTA_UUID { 0x2a38dd39, 0x3414, 0x4b58, \
+		{ 0xa3, 0xbd, 0x73, 0x91, 0x8a, 0xe6, 0x2e, 0x68 } }
+
+TEE_UUID my_pta_uuid = MY_PTA_UUID;
 
 typedef struct{
 	uint32_t measId;
@@ -51,7 +60,7 @@ typedef struct{
 
 
 typedef struct{
-	char IMEI[16];
+	uint64_t IMEI;
 	size_t measLen;
 	measurment meas[MAX_MEAS];
 } packet;
@@ -193,6 +202,58 @@ TEE_Result attestation_tee_ta(uint8_t * hash_tee, size_t hash_tee_size,
 	return res;
 }
 
+TEE_Result get_syscall(){
+
+	uint32_t param_type = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_OUTPUT,
+										TEE_PARAM_TYPE_NONE,
+										TEE_PARAM_TYPE_NONE,
+										TEE_PARAM_TYPE_NONE);		
+
+	TEE_Param params[TEE_NUM_PARAMS];
+
+	TEE_TASessionHandle my_pta_tee_session;
+	uint32_t ret_orig = 0;	
+
+	TEE_Result res = TEE_ERROR_GENERIC;
+
+	res = TEE_OpenTASession(&my_pta_uuid, 			TEE_TIMEOUT_INFINITE, 
+							param_type, 					params, 
+							&my_pta_tee_session, 	&ret_orig);
+
+	if(res != TEE_SUCCESS){
+		IMSG("Cannot open session for check tee");
+		IMSG("ERROR:");
+		error_to_DMSG(res, 0);
+		return res;
+	}				
+
+	res = TEE_InvokeTACommand(my_pta_tee_session, 		TEE_TIMEOUT_INFINITE, 
+							PTA_SYS_CALL_GETTER, 		param_type, 
+							params, 					&ret_orig);
+
+	if(res != TEE_SUCCESS){
+		IMSG("Cannot get tee attestation value");
+		IMSG("ERROR:");
+		error_to_DMSG(res, 0);
+		return res;
+	}
+
+	// IMSG("SYSCALL_COUNT: %ld", params[0].value.b);
+	// IMSG("SYSCALL_PHYS_ADDR: %lx", params[0].value.a);
+
+	// paddr_t	pa = (paddr_t)(params[0].value.a);
+	// uint32_t size_syscall_table = params[0].value.b;
+
+	// register_phys_mem(MEM_AREA_RAM_NSEC, pa, PAGE_SIZE);
+	// unsigned long * compat_syscal_ptr = phys_to_virt(pa, MEM_AREA_RAM_NSEC, sizeof(unsigned long) * size_syscall_table);
+
+	// IMSG("SYSCALL_ADDR_VA: %ld", compat_syscal_ptr);
+
+	TEE_CloseTASession(my_pta_tee_session);
+
+	return res;
+}
+
 TEE_Result attestation_send_recv(uint8_t * hash_tee, uint8_t * hash_ta){
 	DMSG("Called send_recv func");
 
@@ -217,8 +278,7 @@ TEE_Result attestation_send_recv(uint8_t * hash_tee, uint8_t * hash_ta){
 	memcpy(tee.measResult, hash_tee, 32);
 
 	packet msg;
-	char imei[16] = "1234567890123456";
-	memcpy(msg.IMEI, imei, 16);
+	msg.IMEI = 1234567890123456;
 	msg.measLen = 2;
 	memcpy(&(msg.meas[0]), &ta, sizeof(ta));
 	memcpy(&(msg.meas[1]), &tee, sizeof(tee));
@@ -342,17 +402,20 @@ static TEE_Result checker(void __maybe_unused *sess_ctx, uint32_t param_types,
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 
+	get_syscall();
+	return TEE_SUCCESS;
+
 	uint8_t hash_tee[TEE_SHA256_HASH_SIZE ] = { };
 	uint8_t hash_ta[TEE_SHA256_HASH_SIZE] = { };
 
 	TEE_Result att_tee = attestation_tee_ta(hash_tee, sizeof(hash_tee), hash_ta, sizeof(hash_ta));
 
 	// may be unccorected printing, but this enough to understand
-	IMSG("hash TEE mem = ");
-	print_buffer_hex(hash_tee, sizeof(hash_tee));
-
 	IMSG("hash TA mem = ");
 	print_buffer_hex(hash_ta, sizeof(hash_ta));
+
+	IMSG("hash TEE mem = ");
+	print_buffer_hex(hash_tee, sizeof(hash_tee));
 
 	if(att_tee != TEE_SUCCESS){
 		return att_tee;
@@ -377,6 +440,7 @@ TEE_Result TA_InvokeCommandEntryPoint(void __maybe_unused *sess_ctx,
 {
 	//(void)&sess_ctx; /* Unused parameter */
 
+	IMSG("command entry point to Att SERVICE");
 	switch (cmd_id) {
 	case TA_DEVICE_CHECK_VALUE:
 		return checker(sess_ctx, param_types, params);
