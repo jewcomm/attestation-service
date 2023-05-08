@@ -202,14 +202,16 @@ TEE_Result attestation_tee_ta(uint8_t * hash_tee, size_t hash_tee_size,
 	return res;
 }
 
-TEE_Result get_syscall(){
-
-	uint32_t param_type = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_OUTPUT,
+TEE_Result get_syscall(uint8_t *hash_syscall, size_t size_hash){
+	uint32_t param_type = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT,
 										TEE_PARAM_TYPE_NONE,
 										TEE_PARAM_TYPE_NONE,
 										TEE_PARAM_TYPE_NONE);		
 
 	TEE_Param params[TEE_NUM_PARAMS];
+
+	params[0].memref.buffer = hash_syscall;
+	params[0].memref.size = size_hash;
 
 	TEE_TASessionHandle my_pta_tee_session;
 	uint32_t ret_orig = 0;	
@@ -238,23 +240,12 @@ TEE_Result get_syscall(){
 		return res;
 	}
 
-	// IMSG("SYSCALL_COUNT: %ld", params[0].value.b);
-	// IMSG("SYSCALL_PHYS_ADDR: %lx", params[0].value.a);
-
-	// paddr_t	pa = (paddr_t)(params[0].value.a);
-	// uint32_t size_syscall_table = params[0].value.b;
-
-	// register_phys_mem(MEM_AREA_RAM_NSEC, pa, PAGE_SIZE);
-	// unsigned long * compat_syscal_ptr = phys_to_virt(pa, MEM_AREA_RAM_NSEC, sizeof(unsigned long) * size_syscall_table);
-
-	// IMSG("SYSCALL_ADDR_VA: %ld", compat_syscal_ptr);
-
 	TEE_CloseTASession(my_pta_tee_session);
 
 	return res;
 }
 
-TEE_Result attestation_send_recv(uint8_t * hash_tee, uint8_t * hash_ta){
+TEE_Result attestation_send_recv(uint8_t * hash_tee, uint8_t * hash_ta, uint8_t * hash_syscall){
 	DMSG("Called send_recv func");
 
 	TEE_Result res = TEE_ERROR_GENERIC;
@@ -271,17 +262,22 @@ TEE_Result attestation_send_recv(uint8_t * hash_tee, uint8_t * hash_ta){
 
 	measurment ta;
 	ta.measId = 1;
-	memcpy(ta.measResult, hash_ta, 32);
+	memcpy(ta.measResult, hash_ta, TEE_SHA256_HASH_SIZE);
 
 	measurment tee;
 	tee.measId = 2;
-	memcpy(tee.measResult, hash_tee, 32);
+	memcpy(tee.measResult, hash_tee, TEE_SHA256_HASH_SIZE);
+
+	measurment syscall;
+	syscall.measId = 3;
+	memcpy(syscall.measResult, hash_syscall, TEE_SHA256_HASH_SIZE);
 
 	packet msg;
 	msg.IMEI = 1234567890123456;
-	msg.measLen = 2;
+	msg.measLen = 3;
 	memcpy(&(msg.meas[0]), &ta, sizeof(ta));
 	memcpy(&(msg.meas[1]), &tee, sizeof(tee));
+	memcpy(&(msg.meas[2]), &syscall, sizeof(tee));
 	size_t sizeMsg = sizeof(msg);
 
 	// char msg[] = "Hello World!\0";
@@ -402,13 +398,14 @@ static TEE_Result checker(void __maybe_unused *sess_ctx, uint32_t param_types,
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 
-	get_syscall();
-	return TEE_SUCCESS;
-
 	uint8_t hash_tee[TEE_SHA256_HASH_SIZE ] = { };
 	uint8_t hash_ta[TEE_SHA256_HASH_SIZE] = { };
 
 	TEE_Result att_tee = attestation_tee_ta(hash_tee, sizeof(hash_tee), hash_ta, sizeof(hash_ta));
+
+	uint8_t hash_syscall[TEE_SHA256_HASH_SIZE] = {};
+	TEE_Result att_syscall = get_syscall(hash_syscall, TEE_SHA256_HASH_SIZE);
+
 
 	// may be unccorected printing, but this enough to understand
 	IMSG("hash TA mem = ");
@@ -417,11 +414,14 @@ static TEE_Result checker(void __maybe_unused *sess_ctx, uint32_t param_types,
 	IMSG("hash TEE mem = ");
 	print_buffer_hex(hash_tee, sizeof(hash_tee));
 
+	IMSG("hash SYSCALL = ");
+	print_buffer_hex(hash_syscall, TEE_SHA256_HASH_SIZE);
+
 	if(att_tee != TEE_SUCCESS){
 		return att_tee;
 	}
 
-	att_tee = attestation_send_recv(hash_tee, hash_ta);
+	att_tee = attestation_send_recv(hash_tee, hash_ta, hash_syscall);
 	if(att_tee != TEE_SUCCESS){
 		return att_tee;
 	}
