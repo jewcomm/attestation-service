@@ -44,12 +44,10 @@
 
 #define PTA_SYS_CALL_GETTER 2
 
-#define PAGE_SIZE 4096
-
-TEE_UUID pta_attestation_uuid = PTA_ATTESTATION_UUID;
-
 #define MY_PTA_UUID { 0x2a38dd39, 0x3414, 0x4b58, \
 		{ 0xa3, 0xbd, 0x73, 0x91, 0x8a, 0xe6, 0x2e, 0x68 } }
+
+TEE_UUID pta_attestation_uuid = PTA_ATTESTATION_UUID;
 
 TEE_UUID my_pta_uuid = MY_PTA_UUID;
 
@@ -119,7 +117,7 @@ void error_to_DMSG(TEE_Result error, uint32_t extError){
 
 void print_buffer_hex(uint8_t * msg, size_t msg_size){
 	while(msg_size){
-		IMSG("%x", *msg);
+		IMSG("%x (\'%c\')", *msg, *msg);
 		msg++;
 		msg_size--;
 	}
@@ -429,6 +427,22 @@ static TEE_Result checker(void __maybe_unused *sess_ctx, uint32_t param_types,
 	return TEE_SUCCESS;
 }
 
+static TEE_Result initCheck(void __maybe_unused *sess_ctx, uint32_t param_types,
+	TEE_Param params[4])
+{
+	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
+						   TEE_PARAM_TYPE_NONE,
+						   TEE_PARAM_TYPE_NONE,
+						   TEE_PARAM_TYPE_NONE);
+
+	DMSG("has been called");
+
+	if (param_types != exp_param_types)
+		return TEE_ERROR_BAD_PARAMETERS;
+
+	return TEE_SUCCESS;
+}
+
 /*
  * Called when a TA is invoked. sess_ctx hold that value that was
  * assigned by TA_OpenSessionEntryPoint(). The rest of the paramters
@@ -444,6 +458,8 @@ TEE_Result TA_InvokeCommandEntryPoint(void __maybe_unused *sess_ctx,
 	switch (cmd_id) {
 	case TA_DEVICE_CHECK_VALUE:
 		return checker(sess_ctx, param_types, params);
+	case 1:
+		return initCheck(sess_ctx, param_types, params);
 	default:
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
