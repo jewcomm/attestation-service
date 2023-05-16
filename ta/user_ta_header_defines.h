@@ -44,10 +44,10 @@
 #define TA_FLAGS			TA_FLAG_EXEC_DDR
 
 /* Provisioned stack size */
-#define TA_STACK_SIZE			(4 * 1024)
+#define TA_STACK_SIZE			(8 * 1024)
 
 /* Provisioned heap size for TEE_Malloc() and friends */
-#define TA_DATA_SIZE			(32 * 1024)
+#define TA_DATA_SIZE			(64 * 1024)
 
 /* The gpd.ta.version property */
 #define TA_VERSION	"1.0"
@@ -61,6 +61,6 @@
 	USER_TA_PROP_TYPE_STRING, \
         "Some string" }, \
     { "org.linaro.optee.examples.hello_world.property2", \
-	USER_TA_PROP_TYPE_U32, &(const uint32_t){ 0x0010 } }
+	USER_TA_PROP_TYPE_U64, &(const uint32_t){ 0x0010 } }
 
 #endif /* USER_TA_ATTESTATION_SERVICE_H */

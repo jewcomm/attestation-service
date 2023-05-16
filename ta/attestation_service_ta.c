@@ -29,40 +29,19 @@
 #include <tee_internal_api_extensions.h>
 
 #include <pta_attestation.h>
+#include <utee_defines.h> // #define TEE_SHA256_HASH_SIZE 32
 
 #include <tee_isocket.h>
 #include <tee_tcpsocket.h>
+#include <inttypes.h>
 
 #include <attestation_service_ta.h>
+#include <attestation_service_ta_private.h>
 
 #include <string.h> // need for memcpy()
 
-#define ATT_MAX_KEYSZ 4096
-#define TEE_SHA256_HASH_SIZE 32
-
-#define MAX_MEAS 6
-
-#define PTA_SYS_CALL_GETTER 2
-
-#define MY_PTA_UUID { 0x2a38dd39, 0x3414, 0x4b58, \
-		{ 0xa3, 0xbd, 0x73, 0x91, 0x8a, 0xe6, 0x2e, 0x68 } }
-
 TEE_UUID pta_attestation_uuid = PTA_ATTESTATION_UUID;
-
 TEE_UUID my_pta_uuid = MY_PTA_UUID;
-
-typedef struct{
-	uint32_t measId;
-	uint8_t measResult[32];
-} measurment;
-
-
-typedef struct{
-	uint64_t IMEI;
-	size_t measLen;
-	measurment meas[MAX_MEAS];
-} packet;
-
 
 void error_to_DMSG(TEE_Result error, uint32_t extError){
 	switch (error)
@@ -129,16 +108,12 @@ void print_buffer_hex(uint8_t * msg, size_t msg_size){
  * 
  * @details More info in attestation.h
  * 
- * @param hash_tee	 		value PTA_ATTESTATION_HASH_TEE_MEMORY 
- * @param hash_tee_size		number of first bytes copied from the hash_tee
- * @param hash_ta	 		value PTA_ATTESTATION_HASH_TA_MEMORY 
- * @param hash_ta_size		number of first bytes copied from the hash_ta
+ * @param pack	 		AS_Packet with definite meas_length and `meas_id's`
  * 
  * @return TEE_SUCCESS      value received successfully
  * @return TEE_Result       Something failed.
  */
-TEE_Result attestation_tee_ta(uint8_t * hash_tee, size_t hash_tee_size,
-							uint8_t * hash_ta, size_t hash_ta_size){
+TEE_Result attestation_tee_ta(AS_Packet *pack){
 	uint8_t measurement[TEE_SHA256_HASH_SIZE + ATT_MAX_KEYSZ / 8] = { };
 	uint8_t nonce[4] = { 0x12, 0x34, 0x56, 0x78 };
 
@@ -156,6 +131,8 @@ TEE_Result attestation_tee_ta(uint8_t * hash_tee, size_t hash_tee_size,
 	TEE_TASessionHandle pta_attestation_tee_session;
 	uint32_t ret_orig = 0;
 
+	int counter;
+
 	TEE_Result res = TEE_ERROR_GENERIC;
 
 	res = TEE_OpenTASession(&pta_attestation_uuid, 			TEE_TIMEOUT_INFINITE, 
@@ -169,38 +146,68 @@ TEE_Result attestation_tee_ta(uint8_t * hash_tee, size_t hash_tee_size,
 		return res;
 	}
 
-	res = TEE_InvokeTACommand(pta_attestation_tee_session, 		TEE_TIMEOUT_INFINITE, 
+	for(counter = 0; counter < pack->meas_length; counter++){
+		switch (pack->meas[counter].meas_id)
+		{
+		case AS_GET_TA:
+			res = TEE_InvokeTACommand(pta_attestation_tee_session, 		TEE_TIMEOUT_INFINITE, 
 							PTA_ATTESTATION_HASH_TEE_MEMORY, 	param_type, 
 							params, 							&ret_orig);
 
-	if(res != TEE_SUCCESS){
-		IMSG("Cannot get tee attestation value");
-		IMSG("ERROR:");
-		error_to_DMSG(res, 0);
-		return res;
-	}
+			if(res != TEE_SUCCESS){
+				IMSG("Cannot get tee attestation value");
+				IMSG("ERROR:");
+				error_to_DMSG(res, 0);
+				/** 
+				 * if error. trying get other values and leave the buffer empty
+				*/
+				break;
+			}
 
-	memcpy(hash_tee, measurement, hash_tee_size);
-
-	res = TEE_InvokeTACommand(pta_attestation_tee_session, 	TEE_TIMEOUT_INFINITE,
+			memcpy(pack->meas[counter].digest, measurement, TEE_SHA256_HASH_SIZE);
+			break;
+		
+		case AS_GET_TEE:
+			res = TEE_InvokeTACommand(pta_attestation_tee_session, 	TEE_TIMEOUT_INFINITE,
 							PTA_ATTESTATION_HASH_TA_MEMORY, param_type, 
 							params, 						&ret_orig);
 
-	if(res != TEE_SUCCESS){
-		IMSG("Cannot get ta attestation value");
-		IMSG("ERROR:");
-		error_to_DMSG(res, 0);
-		return res;
-	}
+			if(res != TEE_SUCCESS){
+				IMSG("Cannot get ta attestation value");
+				IMSG("ERROR:");
+				error_to_DMSG(res, 0);
+				/** 
+				 * if error. trying get other values and leave the buffer empty
+				*/
+				break;
+			}
 
-	memcpy(hash_ta, measurement, hash_ta_size);
+			memcpy(pack->meas[counter].digest, measurement, TEE_SHA256_HASH_SIZE);
+			break;
+
+		default:
+			break;
+		}
+	}
 
 	TEE_CloseTASession(pta_attestation_tee_session);
 
 	return res;
 }
 
-TEE_Result get_syscall(uint8_t *hash_syscall, size_t size_hash){
+
+/**
+ * @brief Return hash of the Linux system call table
+ * 
+ * @details Hash calculate witout KASLR offset
+ * 			This get equals digest after reboot device(if syscall not corrupted)
+ * 
+ * @param hash_syscall	 	buffer for saving hash. Buffer size should be TEE_SHA256_HASH_SIZE
+ * 
+ * @return TEE_SUCCESS      value received successfully
+ * @return TEE_Result       Something failed.
+ */
+TEE_Result get_syscall(uint8_t *hash_syscall){
 	uint32_t param_type = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT,
 										TEE_PARAM_TYPE_NONE,
 										TEE_PARAM_TYPE_NONE,
@@ -209,7 +216,7 @@ TEE_Result get_syscall(uint8_t *hash_syscall, size_t size_hash){
 	TEE_Param params[TEE_NUM_PARAMS];
 
 	params[0].memref.buffer = hash_syscall;
-	params[0].memref.size = size_hash;
+	params[0].memref.size = TEE_SHA256_HASH_SIZE;
 
 	TEE_TASessionHandle my_pta_tee_session;
 	uint32_t ret_orig = 0;	
@@ -243,64 +250,65 @@ TEE_Result get_syscall(uint8_t *hash_syscall, size_t size_hash){
 	return res;
 }
 
-TEE_Result attestation_send_recv(uint8_t * hash_tee, uint8_t * hash_ta, uint8_t * hash_syscall){
+
+/**
+ * @brief Sends hash's to the server, and receiv results remote attestation
+ *  
+ * @param pack	 	data to send to the server. IMEI is filled from data
+ * @param data		server and IMEI settings
+ * 
+ * @return TEE_SUCCESS      		attestation successfully
+ * @return AS_ATTESTATION_FAILED	attestation failed
+ * @return TEE_Result       		Something failed.
+ */
+TEE_Result attestation_send_recv(AS_Packet * pack, AS_TS_Conn_param * data){
 	DMSG("Called send_recv func");
 
 	TEE_Result res = TEE_ERROR_GENERIC;
 
 	TEE_iSocketHandle ctx;
 	TEE_tcpSocket_Setup setup;
+
+	TEE_MemMove(&(pack->IMEI), &(data->IMEI), sizeof(data->IMEI));
 	
 	setup.ipVersion = TEE_IP_VERSION_4;
-	setup.server_port = 3000;
-	char * addr = "192.168.1.70";
-	setup.server_addr = addr;
+	setup.server_port = data->port;
+	setup.server_addr = data->address;
 
 	uint32_t protocolError;
+	size_t sizeMsg;
 
-	measurment ta;
-	ta.measId = 1;
-	memcpy(ta.measResult, hash_ta, TEE_SHA256_HASH_SIZE);
+	sizeMsg = sizeof(*pack);
 
-	measurment tee;
-	tee.measId = 2;
-	memcpy(tee.measResult, hash_tee, TEE_SHA256_HASH_SIZE);
+	uint32_t rs = SERVER_RES_LENGTH;
+	char receive[SERVER_RES_LENGTH + 1];
 
-	measurment syscall;
-	syscall.measId = 3;
-	memcpy(syscall.measResult, hash_syscall, TEE_SHA256_HASH_SIZE);
-
-	packet msg;
-	msg.IMEI = 1234567890123456;
-	msg.measLen = 3;
-	memcpy(&(msg.meas[0]), &ta, sizeof(ta));
-	memcpy(&(msg.meas[1]), &tee, sizeof(tee));
-	memcpy(&(msg.meas[2]), &syscall, sizeof(tee));
-	size_t sizeMsg = sizeof(msg);
-
-	// char msg[] = "Hello World!\0";
-	// uint32_t sizeMsg = sizeof(msg);	
-	uint32_t rs = 32;
-	char receive[32];
+	memset(receive, 0, SERVER_RES_LENGTH + 1);
 
 	res = TEE_tcpSocket->open(&ctx, &setup, &protocolError);
 	if(res != TEE_SUCCESS){
 		DMSG("Dont open tcp. Return:");
+#ifdef AS_PRINT_SERVER_ERROR
 		error_to_DMSG(res, protocolError);
+#endif
 		return res;
 	}
 
-	res = TEE_tcpSocket->send(ctx, &msg, &sizeMsg, 0);
+	res = TEE_tcpSocket->send(ctx, pack, &sizeMsg, 0);
 	if(res != TEE_SUCCESS){
 		DMSG("Dont send tcp. Return");
+#ifdef AS_PRINT_SERVER_ERROR
 		error_to_DMSG(res, 0);
+#endif
 		return res;
 	}
 
 	res = TEE_tcpSocket->recv(ctx, receive, &rs, 100);
 	if(res != TEE_SUCCESS){
 		DMSG("Dont receiver tcp. Return");
+#ifdef AS_PRINT_SERVER_ERROR
 		error_to_DMSG(res, 0);
+#endif
 		return res;
 	}
 
@@ -309,11 +317,241 @@ TEE_Result attestation_send_recv(uint8_t * hash_tee, uint8_t * hash_ta, uint8_t 
 	res = TEE_tcpSocket->close(ctx);
 	if(res != TEE_SUCCESS){
 		DMSG("Dont close tcp. Return");
+#ifdef AS_PRINT_SERVER_ERROR
 		error_to_DMSG(res, 0);
+#endif
 		return res;
 	}
-	return TEE_SUCCESS;
+
+	if(!memcmp(receive, SERVER_RES_FAILED, SERVER_RES_LENGTH)){
+		return AS_ATTESTATION_FAILED;
+	}
+	if(!memcmp(receive, SERVER_RES_SUCCES, SERVER_RES_LENGTH)){
+		return TEE_SUCCESS;
+	}
+
+	return TEE_ERROR_CANCEL;
 }
+
+/**
+ * @brief Set params for attestation, call attestation functions and call send_recv_funstions
+ *  
+ * @param type_of_message	 	Type of attestation(init ot usual)
+ * @param data					server and IMEI settings
+ * 
+ * @return TEE_SUCCESS      		attestation successfully
+ * @return AS_ATTESTATION_FAILED	attestation failed
+ * @return TEE_Result       		Something failed.
+ */
+static TEE_Result checker(char type_of_message, AS_TS_Conn_param data){
+	AS_Packet check_result;
+	memset(&check_result, 0, sizeof(check_result));
+
+	TEE_Result res;
+
+	check_result.IMEI = data.IMEI;
+	check_result.meas_length = 3;
+	check_result.type_of_message = type_of_message;
+	check_result.meas[0].meas_id = AS_GET_TEE;
+	check_result.meas[1].meas_id = AS_GET_TA;
+	check_result.meas[2].meas_id = AS_GET_SYSCALL;
+
+	res = attestation_tee_ta(&check_result);
+	if(res != TEE_SUCCESS){
+		IMSG("ERROR ATTESTATION TEE TA");
+		/* dont return function, trying get syscall */
+	}
+
+	res = get_syscall(check_result.meas[2].digest);
+		if(res != TEE_SUCCESS){
+		IMSG("ERROR ATTESTATION SYSCALL");
+		/* dont return function, sending zero-buffer to server */
+	}
+
+#ifdef AS_PRINT_HASH_RESULT
+	// may be unccorected printing, but this enough to understand
+	IMSG("hash TA mem = ");
+	print_buffer_hex(check_result.meas[1].digest, TEE_SHA256_HASH_SIZE);
+
+	IMSG("hash TEE mem = ");
+	print_buffer_hex(check_result.meas[0].digest, TEE_SHA256_HASH_SIZE);
+
+	IMSG("hash SYSCALL = ");
+	print_buffer_hex(check_result.meas[2].digest, TEE_SHA256_HASH_SIZE);
+#endif
+
+	return attestation_send_recv(&check_result, &data);
+}
+
+/**
+ * Need enable CFG_ATTESTATION_PTA in config.mk
+ * 
+*/
+static TEE_Result usualy_checker(void __maybe_unused *sess_ctx, uint32_t param_types,
+	TEE_Param params[4])
+{
+	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
+						   TEE_PARAM_TYPE_NONE,
+						   TEE_PARAM_TYPE_NONE,
+						   TEE_PARAM_TYPE_NONE);
+
+	DMSG("has been called usualy_checker");
+
+	if (param_types != exp_param_types)
+		return TEE_ERROR_BAD_PARAMETERS;
+
+#ifdef QEMU_RUN
+	AS_TS_Conn_param data;
+	data.IMEI = DEFINE_IMEI;
+	data.port = DEFINE_PORT;
+	char * addr = DEFINE_ADDRESS;
+	TEE_MemMove(data.address, addr, strlen(addr) + 1);
+#else
+	AS_TS_Conn_param data;
+
+	res = read_TS_data(&data);
+	if(res != TEE_SUCCESS){
+		return res;
+	}
+#endif
+
+	IMSG("IMEI: %llu", data.IMEI);
+	IMSG("ADDR: %s", data.address);
+	IMSG("PORT: %lu", data.port);
+
+	return checker(TA_DEVICE_CHECK_VALUE, data);
+}
+
+static TEE_Result init_checker(void __maybe_unused *sess_ctx, uint32_t param_types,
+	TEE_Param params[4])
+{
+	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT, 	// imei
+						   TEE_PARAM_TYPE_VALUE_INPUT,	//port
+						   TEE_PARAM_TYPE_MEMREF_INPUT,		// address					
+						   TEE_PARAM_TYPE_NONE);
+
+	TEE_Result res = TEE_SUCCESS;
+	AS_Packet pack;
+
+#ifndef QEMU_RUN
+	TEE_ObjectHandle object;
+	size_t obj_id_sz;
+	char *data;
+	size_t data_sz;
+	uint32_t obj_data_flag;
+	obj_id_sz = strlen(obj_id);
+#endif
+
+	DMSG("has been called INIT (FIRST_ATT)");
+
+	if (param_types != exp_param_types)
+		return TEE_ERROR_BAD_PARAMETERS;
+
+	uint64_t imei = (uint64_t)params[0].value.b << 32 | params[0].value.a;
+	DMSG("IMEI: %llu", imei);
+	DMSG("ADDR: %s", params[2].memref.buffer);
+	DMSG("PORT: %lu", params[1].value.a);
+
+#ifndef QEMU_RUN
+	AS_TS_Conn_param data;
+	memset(&data, 0, sizeof(data));	
+
+	data.IMEI = imei;
+	data.port = params[1].value.a;
+	strncpy(data.address, params[2].memref.buffer, strlen(params[2].memref.buffer));
+
+
+	obj_data_flag = TEE_DATA_FLAG_ACCESS_READ |		/* we can later read the oject */
+			TEE_DATA_FLAG_ACCESS_WRITE |		/* we can later write into the object */
+			TEE_DATA_FLAG_ACCESS_WRITE_META |	/* we can later destroy or rename the object */
+			TEE_DATA_FLAG_OVERWRITE;
+
+	res = TEE_CreatePersistentObject(TEE_STORAGE_PRIVATE_REE,
+					obj_id, obj_id_sz,
+					obj_data_flag,
+					TEE_HANDLE_NULL,
+					NULL, 0,
+					&object);
+
+	if(res != TEE_SUCCESS){
+		IMSG("TEE_CreatePersistentObject failed 0x%08x", res);
+		return res;
+	}
+
+	res = TEE_WriteObjectData(object, &data, sizeof(data));
+	if(res != TEE_SUCCESS){
+		IMSG("TEE_WriteObjectData failed 0x%08x", res);
+		TEE_CloseAndDeletePersistentObject1(object);
+		return res;
+	} else {
+		TEE_CloseObject(object);
+	}
+#else
+	AS_TS_Conn_param data;
+	data.IMEI = DEFINE_IMEI;
+	data.port = DEFINE_PORT;
+	char * addr = DEFINE_ADDRESS;
+	TEE_MemMove(data.address, addr, strlen(addr) + 1);
+#endif
+
+	return checker(TA_DEVICE_INIT_VALUE, data);
+}
+
+#ifndef QEMU_RUN
+static TEE_Result read_TS_data(AS_TS_Conn_param * data){
+	TEE_ObjectHandle object;
+	TEE_ObjectInfo object_info;
+	TEE_Result res;
+	uint32_t read_bytes;
+	size_t obj_id_sz;
+	size_t data_sz;
+	char * tmp;
+
+	obj_id_sz = strlen(obj_id);
+	data_sz = sizeof(*data);
+
+	res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE_REE,
+					obj_id, obj_id_sz,
+					TEE_DATA_FLAG_ACCESS_READ,
+					&object);
+	
+	if(res != TEE_SUCCESS){
+		IMSG("Failed to open persistent object, res=0x%08x", res);
+		return res;
+	}
+
+	res = TEE_GetObjectInfo1(object, &object_info);
+	if(res != TEE_SUCCESS){
+		IMSG("Failed to create persistent object, res=0x%08x", res);
+		TEE_CloseObject(object);
+		return res;
+	}
+
+	if(object_info.dataSize != data_sz){
+		/**
+		 * something wrong
+		*/
+		res = TEE_ERROR_SHORT_BUFFER;
+		TEE_CloseObject(object);
+		return res;
+	}
+
+	tmp = TEE_Malloc(data_sz, 0);
+
+	res = TEE_ReadObjectData(object, tmp, data_sz, &read_bytes);
+	if(res == TEE_SUCCESS){
+		TEE_MemMove(data, tmp, data_sz);
+	}
+	if(res != TEE_SUCCESS || read_bytes != object_info.dataSize){
+		IMSG("TEE_ReadObjectData failed 0x%08x, read %" PRIu32 " over %u",
+				res, read_bytes, object_info.dataSize);
+	}
+
+	TEE_CloseObject(object);
+	TEE_Free(tmp);
+	return res;
+} 
+#endif
 
 /*
  * Called when the instance of the TA is created. This is the first call in
@@ -363,7 +601,7 @@ TEE_Result TA_OpenSessionEntryPoint(uint32_t param_types,
 	 * The DMSG() macro is non-standard, TEE Internal API doesn't
 	 * specify any means to logging from a TA.
 	 */
-	IMSG("Hello World!\n");
+	IMSG("Attestation service!\n");
 
 	/* If return value != TEE_SUCCESS the session will not be created. */
 	return TEE_SUCCESS;
@@ -376,71 +614,7 @@ TEE_Result TA_OpenSessionEntryPoint(uint32_t param_types,
 void TA_CloseSessionEntryPoint(void __maybe_unused *sess_ctx)
 {
 	(void)&sess_ctx; /* Unused parameter */
-	IMSG("Goodbye!\n");
-}
-
-/**
- * Need enable CFG_ATTESTATION_PTA in config.mk
- * 
-*/
-static TEE_Result checker(void __maybe_unused *sess_ctx, uint32_t param_types,
-	TEE_Param params[4])
-{
-	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE);
-
-	DMSG("has been called");
-
-	if (param_types != exp_param_types)
-		return TEE_ERROR_BAD_PARAMETERS;
-
-	uint8_t hash_tee[TEE_SHA256_HASH_SIZE ] = { };
-	uint8_t hash_ta[TEE_SHA256_HASH_SIZE] = { };
-
-	TEE_Result att_tee = attestation_tee_ta(hash_tee, sizeof(hash_tee), hash_ta, sizeof(hash_ta));
-
-	uint8_t hash_syscall[TEE_SHA256_HASH_SIZE] = {};
-	TEE_Result att_syscall = get_syscall(hash_syscall, TEE_SHA256_HASH_SIZE);
-
-
-	// may be unccorected printing, but this enough to understand
-	IMSG("hash TA mem = ");
-	print_buffer_hex(hash_ta, sizeof(hash_ta));
-
-	IMSG("hash TEE mem = ");
-	print_buffer_hex(hash_tee, sizeof(hash_tee));
-
-	IMSG("hash SYSCALL = ");
-	print_buffer_hex(hash_syscall, TEE_SHA256_HASH_SIZE);
-
-	if(att_tee != TEE_SUCCESS){
-		return att_tee;
-	}
-
-	att_tee = attestation_send_recv(hash_tee, hash_ta, hash_syscall);
-	if(att_tee != TEE_SUCCESS){
-		return att_tee;
-	}
-
-	return TEE_SUCCESS;
-}
-
-static TEE_Result initCheck(void __maybe_unused *sess_ctx, uint32_t param_types,
-	TEE_Param params[4])
-{
-	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE);
-
-	DMSG("has been called");
-
-	if (param_types != exp_param_types)
-		return TEE_ERROR_BAD_PARAMETERS;
-
-	return TEE_SUCCESS;
+	IMSG("Exit!\n");
 }
 
 /*
@@ -454,12 +628,12 @@ TEE_Result TA_InvokeCommandEntryPoint(void __maybe_unused *sess_ctx,
 {
 	//(void)&sess_ctx; /* Unused parameter */
 
-	IMSG("command entry point to Att SERVICE");
+	IMSG("command entry point to attestation service");
 	switch (cmd_id) {
 	case TA_DEVICE_CHECK_VALUE:
-		return checker(sess_ctx, param_types, params);
-	case 1:
-		return initCheck(sess_ctx, param_types, params);
+		return usualy_checker(sess_ctx, param_types, params);
+	case TA_DEVICE_INIT_VALUE:
+		return init_checker(sess_ctx, param_types, params);
 	default:
 		return TEE_ERROR_BAD_PARAMETERS;
 	}

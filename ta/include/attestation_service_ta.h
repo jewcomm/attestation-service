@@ -35,8 +35,10 @@
 	{ 0xe73c0f36, 0x3753, 0x40ce, \
 		{ 0xa0, 0xe9, 0x4d, 0x3c, 0x55, 0x79, 0x73, 0x92} }
 
+#define ADDRESS_BUFFER_MAX_SIZE 15
+
 /* The function IDs implemented in this TA */
 #define TA_DEVICE_CHECK_VALUE		0
-#define TA_DEVICE_RECEIVE_SYS_CALL	1
+#define TA_DEVICE_INIT_VALUE		1
 
 #endif /*TA_ATTESTATION_SERVICE_H*/
