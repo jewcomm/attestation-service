@@ -26,7 +26,7 @@ const char obj_id[] = "AS_Params";
 
 /* in QEMU after reboot dont saved data in trusted storage */
 #ifdef QEMU_RUN
-#define DEFINE_ADDRESS "192.168.1.70\0"
+#define DEFINE_ADDRESS "192.168.42.94\0"
 #define DEFINE_PORT 3000
 #define DEFINE_IMEI 1234567890123456LLU
 #endif
@@ -50,11 +50,7 @@ typedef struct{
 
 typedef struct{
 	uint64_t IMEI;
-
-	// for simplicity equals cmd_id in TA_InvokeCommandEntryPoint
-	char type_of_message; 
-	
-	size_t meas_length;
+	uint64_t meas_length;
 	AS_Measurement meas[MAX_MEAS];
 } AS_Packet;
 

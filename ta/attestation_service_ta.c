@@ -1,30 +1,3 @@
-/*
- * Copyright (c) 2016, Linaro Limited
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- * this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- * this list of conditions and the following disclaimer in the documentation
- * and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include <tee_internal_api.h>
 #include <tee_internal_api_extensions.h>
 
@@ -323,13 +296,6 @@ TEE_Result attestation_send_recv(AS_Packet * pack, AS_TS_Conn_param * data){
 		return res;
 	}
 
-	if(!memcmp(receive, SERVER_RES_FAILED, SERVER_RES_LENGTH)){
-		return AS_ATTESTATION_FAILED;
-	}
-	if(!memcmp(receive, SERVER_RES_SUCCES, SERVER_RES_LENGTH)){
-		return TEE_SUCCESS;
-	}
-
 	return TEE_ERROR_CANCEL;
 }
 
@@ -351,7 +317,6 @@ static TEE_Result checker(char type_of_message, AS_TS_Conn_param data){
 
 	check_result.IMEI = data.IMEI;
 	check_result.meas_length = 3;
-	check_result.type_of_message = type_of_message;
 	check_result.meas[0].meas_id = AS_GET_TEE;
 	check_result.meas[1].meas_id = AS_GET_TA;
 	check_result.meas[2].meas_id = AS_GET_SYSCALL;
@@ -385,7 +350,6 @@ static TEE_Result checker(char type_of_message, AS_TS_Conn_param data){
 
 /**
  * Need enable CFG_ATTESTATION_PTA in config.mk
- * 
 */
 static TEE_Result usualy_checker(void __maybe_unused *sess_ctx, uint32_t param_types,
 	TEE_Param params[4])
@@ -400,20 +364,11 @@ static TEE_Result usualy_checker(void __maybe_unused *sess_ctx, uint32_t param_t
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 
-#ifdef QEMU_RUN
 	AS_TS_Conn_param data;
 	data.IMEI = DEFINE_IMEI;
 	data.port = DEFINE_PORT;
 	char * addr = DEFINE_ADDRESS;
 	TEE_MemMove(data.address, addr, strlen(addr) + 1);
-#else
-	AS_TS_Conn_param data;
-
-	res = read_TS_data(&data);
-	if(res != TEE_SUCCESS){
-		return res;
-	}
-#endif
 
 	IMSG("IMEI: %llu", data.IMEI);
 	IMSG("ADDR: %s", data.address);
@@ -421,137 +376,6 @@ static TEE_Result usualy_checker(void __maybe_unused *sess_ctx, uint32_t param_t
 
 	return checker(TA_DEVICE_CHECK_VALUE, data);
 }
-
-static TEE_Result init_checker(void __maybe_unused *sess_ctx, uint32_t param_types,
-	TEE_Param params[4])
-{
-	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT, 	// imei
-						   TEE_PARAM_TYPE_VALUE_INPUT,	//port
-						   TEE_PARAM_TYPE_MEMREF_INPUT,		// address					
-						   TEE_PARAM_TYPE_NONE);
-
-	TEE_Result res = TEE_SUCCESS;
-	AS_Packet pack;
-
-#ifndef QEMU_RUN
-	TEE_ObjectHandle object;
-	size_t obj_id_sz;
-	char *data;
-	size_t data_sz;
-	uint32_t obj_data_flag;
-	obj_id_sz = strlen(obj_id);
-#endif
-
-	DMSG("has been called INIT (FIRST_ATT)");
-
-	if (param_types != exp_param_types)
-		return TEE_ERROR_BAD_PARAMETERS;
-
-	uint64_t imei = (uint64_t)params[0].value.b << 32 | params[0].value.a;
-	DMSG("IMEI: %llu", imei);
-	DMSG("ADDR: %s", params[2].memref.buffer);
-	DMSG("PORT: %lu", params[1].value.a);
-
-#ifndef QEMU_RUN
-	AS_TS_Conn_param data;
-	memset(&data, 0, sizeof(data));	
-
-	data.IMEI = imei;
-	data.port = params[1].value.a;
-	strncpy(data.address, params[2].memref.buffer, strlen(params[2].memref.buffer));
-
-
-	obj_data_flag = TEE_DATA_FLAG_ACCESS_READ |		/* we can later read the oject */
-			TEE_DATA_FLAG_ACCESS_WRITE |		/* we can later write into the object */
-			TEE_DATA_FLAG_ACCESS_WRITE_META |	/* we can later destroy or rename the object */
-			TEE_DATA_FLAG_OVERWRITE;
-
-	res = TEE_CreatePersistentObject(TEE_STORAGE_PRIVATE_REE,
-					obj_id, obj_id_sz,
-					obj_data_flag,
-					TEE_HANDLE_NULL,
-					NULL, 0,
-					&object);
-
-	if(res != TEE_SUCCESS){
-		IMSG("TEE_CreatePersistentObject failed 0x%08x", res);
-		return res;
-	}
-
-	res = TEE_WriteObjectData(object, &data, sizeof(data));
-	if(res != TEE_SUCCESS){
-		IMSG("TEE_WriteObjectData failed 0x%08x", res);
-		TEE_CloseAndDeletePersistentObject1(object);
-		return res;
-	} else {
-		TEE_CloseObject(object);
-	}
-#else
-	AS_TS_Conn_param data;
-	data.IMEI = DEFINE_IMEI;
-	data.port = DEFINE_PORT;
-	char * addr = DEFINE_ADDRESS;
-	TEE_MemMove(data.address, addr, strlen(addr) + 1);
-#endif
-
-	return checker(TA_DEVICE_INIT_VALUE, data);
-}
-
-#ifndef QEMU_RUN
-static TEE_Result read_TS_data(AS_TS_Conn_param * data){
-	TEE_ObjectHandle object;
-	TEE_ObjectInfo object_info;
-	TEE_Result res;
-	uint32_t read_bytes;
-	size_t obj_id_sz;
-	size_t data_sz;
-	char * tmp;
-
-	obj_id_sz = strlen(obj_id);
-	data_sz = sizeof(*data);
-
-	res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE_REE,
-					obj_id, obj_id_sz,
-					TEE_DATA_FLAG_ACCESS_READ,
-					&object);
-	
-	if(res != TEE_SUCCESS){
-		IMSG("Failed to open persistent object, res=0x%08x", res);
-		return res;
-	}
-
-	res = TEE_GetObjectInfo1(object, &object_info);
-	if(res != TEE_SUCCESS){
-		IMSG("Failed to create persistent object, res=0x%08x", res);
-		TEE_CloseObject(object);
-		return res;
-	}
-
-	if(object_info.dataSize != data_sz){
-		/**
-		 * something wrong
-		*/
-		res = TEE_ERROR_SHORT_BUFFER;
-		TEE_CloseObject(object);
-		return res;
-	}
-
-	tmp = TEE_Malloc(data_sz, 0);
-
-	res = TEE_ReadObjectData(object, tmp, data_sz, &read_bytes);
-	if(res == TEE_SUCCESS){
-		TEE_MemMove(data, tmp, data_sz);
-	}
-	if(res != TEE_SUCCESS || read_bytes != object_info.dataSize){
-		IMSG("TEE_ReadObjectData failed 0x%08x, read %" PRIu32 " over %u",
-				res, read_bytes, object_info.dataSize);
-	}
-
-	TEE_CloseObject(object);
-	TEE_Free(tmp);
-	return res;
-} 
-#endif
 
 /*
  * Called when the instance of the TA is created. This is the first call in
@@ -632,8 +456,6 @@ TEE_Result TA_InvokeCommandEntryPoint(void __maybe_unused *sess_ctx,
 	switch (cmd_id) {
 	case TA_DEVICE_CHECK_VALUE:
 		return usualy_checker(sess_ctx, param_types, params);
-	case TA_DEVICE_INIT_VALUE:
-		return init_checker(sess_ctx, param_types, params);
 	default:
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
